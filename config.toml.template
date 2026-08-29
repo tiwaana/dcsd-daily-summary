@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────
+#  DCSD Daily School Summary — configuration
+#
+#  Copy this file to:   ~/.config/dcsd-daily-summary/config.toml
+#  then fill in your values.  It lives OUTSIDE the repo on purpose —
+#  nothing sensitive touches the working tree or your shell env.
+#
+#    mkdir -p ~/.config/dcsd-daily-summary
+#    cp config.toml.template ~/.config/dcsd-daily-summary/config.toml
+#    chmod 600 ~/.config/dcsd-daily-summary/config.toml
+#
+#  (Override the path with the DCSD_CONFIG env var if you like.)
+# ─────────────────────────────────────────────────────────
+
+[infinite_campus]
+# Your DCSD parent-portal username and password.
+username = "your_ic_parent_username"
+password = "your_ic_parent_password"
+# Defaults below are correct for Douglas County — only change if the portal moves.
+base_url = "https://dcsdk12.infinitecampus.org"
+district = "douglas"          # your district's portal app name
+
+[email]
+# How to send:  "smtp" = plain SMTP with a Gmail App Password (simplest)
+#               "gog"  = optional: send via external CLI helpers (advanced)
+method = "smtp"
+
+# ── method = "smtp" ───────────────────────────────────────────────────────────
+# For Gmail, use an App Password (https://myaccount.google.com/apppasswords).
+username   = "you@gmail.com"
+password   = "xxxx xxxx xxxx xxxx"
+from       = "you@gmail.com"
+smtp_host  = "smtp.gmail.com"
+smtp_port  = 587
+recipients = ["you@gmail.com"]                 # everyone who gets the email
+
+# ── method = "gog" (optional; only if you send mail through CLI helpers) ──────
+# Direct recipients are emailed by `gog_send_bin`; anyone in draft_recipients
+# gets a draft prepared by `gog_draft_bin` for you to review and send. Fill in
+# your own helper paths/accounts if you use this method.
+# gog_send_bin      = "/path/to/send-helper"
+# gog_draft_bin     = "/path/to/draft-helper"
+# gog_draft_account = "you@example.com"
+# send_recipients   = ["you@example.com"]
+# draft_recipients  = ["someone@example.com"]
+
+# ── Optional per-student overrides ────────────────────────
+# Students are auto-discovered from the portal, so you don't NEED any of this.
+# Add a block only to rename a kid in the email or route their summary to
+# extra recipients. `match` is a case-insensitive substring of the portal name.
+#
+# [[students]]
+# match        = "ava"          # matches "Ava Smith" in the portal
+# display_name = "Ava"          # what shows in the email (optional)
+# recipients   = ["ava@example.com"]
+#
+# [[students]]
+# match        = "sam"
+# recipients   = ["sam@example.com"]

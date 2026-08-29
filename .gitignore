@@ -1,0 +1,24 @@
+# Credentials & config — never commit (config lives in ~/.config/dcsd-daily-summary/)
+.env
+config.toml
+
+# Local run artifacts
+out/
+debug/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
