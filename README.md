@@ -65,6 +65,17 @@ The last-emailed state is remembered in `~/.config/dcsd-daily-summary/state.json
 (override with `DCSD_STATE`). Use `--force` to send regardless, or delete
 `state.json` to reset the baseline.
 
+## Tests
+
+Offline harness — no network, no credentials, synthetic data only:
+
+```bash
+python3 -m unittest discover -s tests    # or: pytest
+```
+
+Covers the parsers, the change-detection logic, and the security behaviors
+(HTML escaping, email-subject header-injection guard, config-permission check).
+
 ## Schedule (local cron)
 
 Runs on your machine, so nothing leaves it. The machine has to be awake at run time.
@@ -84,6 +95,10 @@ crontab -e
   occasionally require a small update to the tool.
 - Sending: SMTP with an app password works out of the box. See the config
   template for the available options.
+- **Privacy:** the config file must be private (mode `600`) or the tool refuses
+  to run. `--dry-run` writes a rendered copy to `./out/` and `--debug` dumps raw
+  records to `./debug/` — both contain student data, are created `700`, and are
+  git-ignored; delete them when you're done poking around.
 
 ## Credit
 

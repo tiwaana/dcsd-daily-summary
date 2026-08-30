@@ -28,6 +28,7 @@ import json
 import os
 import re
 import smtplib
+import ssl
 import subprocess
 import sys
 from datetime import date, datetime, timedelta
@@ -60,6 +61,21 @@ def load_config() -> dict:
         print(f"ERROR: config file not found: {p}")
         print("Create it from config.toml.template — see README.md.")
         sys.exit(1)
+
+    # The config holds cleartext credentials — refuse to read it if it is
+    # group/other-accessible (mode must be 0600-ish). Symlinks are resolved so
+    # a permissive target can't hide behind a tight symlink.
+    try:
+        st = p.resolve().stat()
+        if st.st_mode & 0o077:
+            print(f"ERROR: {p} is accessible to other users "
+                  f"(mode {st.st_mode & 0o777:03o}). Fix it with:")
+            print(f"    chmod 600 {p}")
+            sys.exit(1)
+    except OSError as e:
+        print(f"ERROR: cannot stat config file {p}: {e}")
+        sys.exit(1)
+
     with p.open("rb") as fh:
         cfg = tomllib.load(fh)
 
@@ -100,6 +116,10 @@ def save_state(state: dict) -> None:
     p = state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(state, indent=2, sort_keys=True))
+    try:
+        os.chmod(p, 0o600)  # holds per-student marks — keep it private
+    except OSError:
+        pass
 
 
 def build_snapshot(data: dict) -> dict:
@@ -205,8 +225,12 @@ class ICClient:
         state = m.group(1).strip().lower() if m else ""
         if state == "password-error":
             raise RuntimeError("IC returned password-error — wrong username or password.")
-        if state and state != "success":
-            raise RuntimeError(f"IC login not successful — auth state '{state}'.")
+        # Require an explicit success — do not treat a missing/unknown auth
+        # state as authenticated just because a session cookie came back.
+        if state != "success":
+            raise RuntimeError(
+                f"IC login not successful — auth state '{state or 'unknown'}'."
+            )
 
         # IC echoes XSRF-TOKEN as a cookie; the SPA replays it as a header on
         # every call. Wire it in so state-changing/API calls are accepted.
@@ -222,13 +246,21 @@ class ICClient:
         r = self.s.get(url, params=params or None, timeout=30)
         if r.status_code == 404:
             return None
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Raise WITHOUT the URL — its query string carries personID (PII)
+            # that would otherwise land in stack traces / run.log.
+            raise RuntimeError(f"IC request {path} returned HTTP {r.status_code}.")
         try:
             data = r.json()
         except ValueError:
             return None
         if self.debug_dir and label:
+            # Debug dumps contain full student records — keep the dir private.
             self.debug_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(self.debug_dir, 0o700)
+            except OSError:
+                pass
             safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
             (self.debug_dir / f"{safe}.json").write_text(
                 json.dumps(data, indent=2, default=str)
@@ -640,6 +672,12 @@ def build_email_html(data: dict, changes: list | None = None) -> str:
 </body></html>"""
 
 
+def _subject(student_name: str, subject_date: str) -> str:
+    """Build the email subject, stripping CR/LF so a name can't inject headers."""
+    name = re.sub(r"[\r\n]+", " ", str(student_name)).strip()
+    return f"📚 Daily School Summary — {name} — {subject_date}"
+
+
 def _plain_fallback(data: dict) -> str:
     """A short plain-text body so the message is valid even without HTML rendering."""
     lines = [f"Daily school summary for {data['student_name']} — {data['date']}", ""]
@@ -675,7 +713,7 @@ def send_via_gog(cfg_email: dict, data: dict, html: str, subject_date: str) -> N
     helper; anyone in draft_recipients gets a draft prepared by the draft
     helper for you to review and send. Helper paths/account come from config.
     """
-    subject = f"📚 Daily School Summary — {data['student_name']} — {subject_date}"
+    subject = _subject(data["student_name"], subject_date)
     plain = _plain_fallback(data)
 
     send_bin = cfg_email.get("gog_send_bin", "")
@@ -710,17 +748,18 @@ def send_email(cfg_email: dict, html: str, student_name: str, subject_date: str,
                recipients: list) -> None:
     sender = cfg_email.get("from") or cfg_email.get("username", "")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📚 Daily School Summary — {student_name} — {subject_date}"
+    msg["Subject"] = _subject(student_name, subject_date)
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText(html, "html"))
 
     host = cfg_email.get("smtp_host", "smtp.gmail.com")
     port = int(cfg_email.get("smtp_port", 587))
+    context = ssl.create_default_context()  # verify cert + hostname on STARTTLS
     print(f"  → Sending to {', '.join(recipients)} via {host}…")
-    with smtplib.SMTP(host, port) as server:
+    with smtplib.SMTP(host, port, timeout=30) as server:
         server.ehlo()
-        server.starttls()
+        server.starttls(context=context)
         server.ehlo()
         server.login(cfg_email["username"], cfg_email["password"])
         server.sendmail(sender, recipients, msg.as_string())
@@ -812,14 +851,22 @@ def main() -> int:
         recipients = list(dict.fromkeys(global_recipients + ov.get("recipients", [])))
         html = build_email_html(data, changes)
 
-        # Always keep a local copy of the rendered email.
-        out_dir = here / "out"
-        out_dir.mkdir(exist_ok=True)
-        safe = re.sub(r"[^A-Za-z0-9_-]", "_", data["student_name"])
-        out_file = out_dir / f"{safe}-{date.today():%Y%m%d}.html"
-        out_file.write_text(html)
+        def write_local_copy() -> Path:
+            # Rendered emails carry grades/attendance PII — write only when we're
+            # NOT delivering (dry-run / misconfig), into a private directory.
+            out_dir = here / "out"
+            out_dir.mkdir(mode=0o700, exist_ok=True)
+            try:
+                os.chmod(out_dir, 0o700)
+            except OSError:
+                pass
+            safe = re.sub(r"[^A-Za-z0-9_-]", "_", data["student_name"])
+            f = out_dir / f"{safe}-{date.today():%Y%m%d}.html"
+            f.write_text(html)
+            return f
 
         if args.dry_run:
+            out_file = write_local_copy()
             verdict = "would send" if (changes or args.force) else "would skip (no change)"
             print(f"  → Wrote {out_file}  (dry-run, {verdict})")
             continue  # never mutate state on a dry run
@@ -837,6 +884,7 @@ def main() -> int:
             elif recipients:
                 send_email(email_cfg, html, data["student_name"], data["date"], recipients)
             else:
+                out_file = write_local_copy()
                 print(f"  → Wrote {out_file}  (no recipients configured)")
             # Only advance the baseline after a successful send, so a failed
             # send retries (and re-reports the same changes) next run.
